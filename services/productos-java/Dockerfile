@@ -5,7 +5,7 @@
 # =============================================================================
 
 # ---------- Etapa 1: compilación ----------
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3.9-eclipse-temurin-26 AS build
 WORKDIR /workspace
 
 # Primero solo el pom.xml: la capa de dependencias se reutiliza mientras no cambie
