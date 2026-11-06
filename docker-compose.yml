@@ -117,7 +117,7 @@ services:
 
   gateway:
     <<: *seguridad-app
-    image: nginxinc/nginx-unprivileged:1.30-alpine
+    image: nginxinc/nginx-unprivileged:1.31-alpine
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     volumes:
