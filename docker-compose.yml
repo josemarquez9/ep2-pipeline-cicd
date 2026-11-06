@@ -1,0 +1,152 @@
+# =============================================================================
+# Orquestación con Docker Compose
+#
+#   cliente --> gateway (nginx) --+--> productos (Java, N réplicas) --> db (PostgreSQL)
+#                                 +--> reportes  (Python, N réplicas) --HTTP--> productos
+#
+# Uso local:   cp .env.example .env   (editar DB_PASSWORD)
+#              docker compose up -d --build --wait
+# Escalar:     docker compose up -d --scale productos=3
+# Despliegue:  el pipeline genera un .env y ejecuta "docker compose up -d --wait" (ver .github/workflows/deploy.yml)
+# =============================================================================
+
+# Endurecimiento común de los contenedores de aplicación (se reutiliza con "<<: *seguridad-app")
+x-seguridad-app: &seguridad-app
+  restart: unless-stopped
+  read_only: true            # sistema de archivos raíz de solo lectura
+  tmpfs:
+    - /tmp                   # único directorio escribible (en memoria)
+  cap_drop:
+    - ALL                    # sin capacidades de Linux
+  security_opt:
+    - no-new-privileges:true # impide escalar privilegios
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-productos}
+      POSTGRES_USER: ${DB_USER:-productos}
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?Defina DB_PASSWORD en el archivo .env (ver .env.example)}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  productos:
+    <<: *seguridad-app
+    image: ${IMAGE_PREFIX:-local}/productos:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/productos-java
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    environment:
+      SERVER_PORT: "8081"
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-productos}
+      DB_USER: ${DB_USER:-productos}
+      DB_PASSWORD: "${DB_PASSWORD:?Defina DB_PASSWORD en el archivo .env (ver .env.example)}"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - edge
+      - data
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 90s
+    deploy:
+      replicas: ${PRODUCTOS_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "${PRODUCTOS_CPUS:-1.00}"
+          memory: ${PRODUCTOS_MEMORY:-512M}
+        reservations:
+          memory: 256M
+
+  reportes:
+    <<: *seguridad-app
+    image: ${IMAGE_PREFIX:-local}/reportes:${IMAGE_TAG:-dev}
+    build:
+      context: ./services/reportes-python
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    environment:
+      PRODUCTOS_URL: http://productos:8081
+    depends_on:
+      productos:
+        condition: service_healthy
+    networks:
+      - edge
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      replicas: ${REPORTES_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "${REPORTES_CPUS:-0.50}"
+          memory: ${REPORTES_MEMORY:-256M}
+        reservations:
+          memory: 128M
+
+  gateway:
+    <<: *seguridad-app
+    image: nginxinc/nginx-unprivileged:1.30-alpine
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ./gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      productos:
+        condition: service_healthy
+      reportes:
+        condition: service_healthy
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+networks:
+  edge:                      # gateway <-> aplicaciones
+    driver: bridge
+  data:                      # aplicaciones <-> base de datos (sin salida a Internet)
+    driver: bridge
+    internal: true
+
+volumes:
+  pgdata:

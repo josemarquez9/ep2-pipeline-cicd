@@ -1,0 +1,89 @@
+# Dependabot: actualizaciones semanales de dependencias, imágenes base y acciones de GitHub.
+# Los PR de actualización se abren contra "develop" (así pasan por staging antes de llegar a main).
+# Además, active en Settings > Code security: Dependency graph, Dependabot alerts y Dependabot security updates.
+version: 2
+updates:
+  # Java (Maven) - microservicio de productos
+  - package-ecosystem: "maven"
+    directory: "/services/productos-java"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      maven-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Python (pip) - microservicio de reportes
+  - package-ecosystem: "pip"
+    directory: "/services/reportes-python"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Imágenes base de los Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/services/productos-java"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:30"
+      timezone: "America/Santiago"
+    commit-message:
+      prefix: "chore(docker)"
+
+  - package-ecosystem: "docker"
+    directory: "/services/reportes-python"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:30"
+      timezone: "America/Santiago"
+    commit-message:
+      prefix: "chore(docker)"
+
+  # Imágenes usadas en docker-compose.yml (PostgreSQL, nginx)
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    commit-message:
+      prefix: "chore(docker)"
+
+  # Acciones usadas en los workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

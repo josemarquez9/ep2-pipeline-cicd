@@ -1,0 +1,30 @@
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+
+# Java / Maven
+target/
+*.class
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+reports/
+
+# Evidencias generadas por el pipeline en local
+evidencia/
+snyk-*.json
+
+# Editores / sistema operativo
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

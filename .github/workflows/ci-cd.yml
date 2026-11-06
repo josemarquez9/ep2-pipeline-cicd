@@ -1,0 +1,412 @@
+name: CI/CD - Microservicios
+
+# Flujo:  pruebas (Java + Python)  ┐
+#         seguridad (Snyk)         ├─> imágenes Docker (build + scan + publicación en GHCR)
+#                                  ┘        └─> despliegue staging ─> despliegue producción (aprobación manual)
+on:
+  push:
+    branches: [main, develop]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Mínimo privilegio: solo lectura por defecto; cada job solicita únicamente lo que necesita.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  JAVA_VERSION: "21"
+  PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+  # Políticas de calidad y seguridad, parametrizables en Settings > Secrets and variables > Actions > Variables
+  COVERAGE_MIN: ${{ vars.COVERAGE_MIN || '80' }}
+  SNYK_SEVERITY_THRESHOLD: ${{ vars.SNYK_SEVERITY_THRESHOLD || 'high' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # IE2 - Pruebas automatizadas (Java): JUnit Jupiter + Mockito + JaCoCo con umbral de cobertura
+  # ---------------------------------------------------------------------------
+  test-java:
+    name: Pruebas Java (JUnit + JaCoCo)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: services/productos-java
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: services/productos-java/pom.xml
+
+      - name: Compilar, ejecutar pruebas y verificar la cobertura mínima
+        run: |
+          MIN_RATIO="$(awk -v m="$COVERAGE_MIN" 'BEGIN { printf "%.2f", m / 100 }')"
+          mvn -B -ntp verify -Djacoco.minimum.coverage="$MIN_RATIO"
+
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          CSV=target/site/jacoco/jacoco.csv
+          if [ -f "$CSV" ]; then
+            COV="$(awk -F, 'NR > 1 { m += $8; c += $9 } END { if (m + c > 0) printf "%.1f", 100 * c / (m + c); else print "0.0" }' "$CSV")"
+            echo "### ☕ productos-java: cobertura de líneas **${COV}%** (mínimo exigido: ${COVERAGE_MIN}%)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: reportes-java
+          path: |
+            services/productos-java/target/site/jacoco
+            services/productos-java/target/surefire-reports
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # IE2 - Pruebas automatizadas (Python): PyTest + pytest-cov con umbral de cobertura
+  # ---------------------------------------------------------------------------
+  test-python:
+    name: Pruebas Python (PyTest + Coverage)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/reportes-python
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            services/reportes-python/requirements.txt
+            services/reportes-python/requirements-dev.txt
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Ejecutar pruebas y verificar la cobertura mínima
+        run: pytest --cov-fail-under="$COVERAGE_MIN"
+
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          if [ -f coverage.xml ]; then
+            RATE="$(grep -o 'line-rate="[0-9.]*"' coverage.xml | head -n 1 | cut -d'"' -f2)"
+            COV="$(awk -v r="$RATE" 'BEGIN { printf "%.1f", r * 100 }')"
+            echo "### 🐍 reportes-python: cobertura de líneas **${COV}%** (mínimo exigido: ${COVERAGE_MIN}%)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: reportes-python
+          path: |
+            services/reportes-python/htmlcov
+            services/reportes-python/coverage.xml
+            services/reportes-python/reports/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # IE3 - Seguridad: Snyk (dependencias + análisis estático de código).
+  # Dependabot (ver .github/dependabot.yml) complementa este análisis con alertas y PR de actualización.
+  # Si Snyk encuentra vulnerabilidades >= umbral, el job FALLA y BLOQUEA las etapas siguientes.
+  # ---------------------------------------------------------------------------
+  security-scan:
+    name: Seguridad (Snyk)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verificar que el secret SNYK_TOKEN esté configurado
+        run: |
+          if [ -z "${SNYK_TOKEN}" ]; then
+            echo "::error title=Falta SNYK_TOKEN::Cree el secret SNYK_TOKEN (Settings > Secrets and variables > Actions). Para los PR de Dependabot cree tambien el secret en la pestana Dependabot."
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: services/productos-java/pom.xml
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Instalar Snyk CLI y las dependencias de Python a analizar
+        run: |
+          npm install --global snyk@1
+          python -m pip install -r services/reportes-python/requirements.txt
+
+      - name: Snyk Open Source - productos-java (pom.xml)
+        working-directory: services/productos-java
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/ci/snyk-gate.sh" "Snyk Open Source (Java)" \
+            snyk test --file=pom.xml --severity-threshold="$SNYK_SEVERITY_THRESHOLD" --json-file-output=snyk-java.json
+
+      - name: Snyk Open Source - reportes-python (requirements.txt)
+        working-directory: services/reportes-python
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/ci/snyk-gate.sh" "Snyk Open Source (Python)" \
+            snyk test --file=requirements.txt --package-manager=pip --severity-threshold="$SNYK_SEVERITY_THRESHOLD" --json-file-output=snyk-python.json
+
+      - name: Snyk Code - análisis estático (SAST) del código fuente
+        run: |
+          bash scripts/ci/snyk-gate.sh "Snyk Code (SAST)" \
+            snyk code test --severity-threshold="$SNYK_SEVERITY_THRESHOLD" .
+
+      - name: Publicar resultados de Snyk
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: reportes-snyk
+          path: |
+            services/productos-java/snyk-java.json
+            services/reportes-python/snyk-python.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # IE1 + IE3 + IE4 - Imágenes Docker: construir, validar políticas, escanear y publicar en GHCR
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Imagen Docker (${{ matrix.service }})
+    needs: [test-java, test-python, security-scan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: productos
+            context: services/productos-java
+          - service: reportes
+            context: services/reportes-python
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Preparar variables de la imagen
+        id: vars
+        env:
+          SERVICIO: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY,,}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-${GITHUB_REF_NAME//\//-}.${SHORT_SHA}"
+          fi
+          {
+            echo "image=${REGISTRY}/${REPO}/${SERVICIO}"
+            echo "local_tag=ci-local/${SERVICIO}:${SHORT_SHA}"
+            echo "version=${VERSION}"
+            echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Metadatos de la imagen (tags y etiquetas OCI)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.service }}
+
+      - name: Construir la imagen (local, para validarla antes de publicarla)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          load: true
+          push: false
+          tags: ${{ steps.vars.outputs.local_tag }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.vars.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.vars.outputs.build_time }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+          sbom: false
+
+      - name: Política - el contenedor NO debe ejecutarse como root
+        env:
+          IMAGEN: ${{ steps.vars.outputs.local_tag }}
+        run: |
+          UID_IMAGEN="$(docker run --rm --entrypoint id "$IMAGEN" -u)"
+          echo "UID con el que corre la imagen: ${UID_IMAGEN}"
+          if [ "${UID_IMAGEN}" = "0" ]; then
+            echo "::error title=Política de seguridad::La imagen se ejecuta como root (UID 0)."
+            exit 1
+          fi
+
+      - name: Instalar Snyk CLI
+        run: npm install --global snyk@1
+
+      - name: Snyk Container - escaneo de vulnerabilidades de la imagen
+        env:
+          IMAGEN: ${{ steps.vars.outputs.local_tag }}
+          DOCKERFILE: ${{ matrix.context }}/Dockerfile
+        run: |
+          if [ -z "${SNYK_TOKEN}" ]; then
+            echo "::error title=Falta SNYK_TOKEN::Cree el secret SNYK_TOKEN en Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          bash scripts/ci/snyk-gate.sh "Snyk Container (${{ matrix.service }})" \
+            snyk container test "$IMAGEN" --file="$DOCKERFILE" --exclude-base-image-vulns \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD"
+
+      - name: Iniciar sesión en GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar la imagen en GHCR (con SBOM y provenance)
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.vars.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.vars.outputs.build_time }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Resumen de trazabilidad de la imagen
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### 🐳 Imagen ${{ matrix.service }}"
+            echo ""
+            printf -- '- Repositorio: `%s`\n' "$IMAGE"
+            printf -- '- Digest: `%s`\n' "$DIGEST"
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            echo "- Tags publicados:"
+            echo ""
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # IE4 - Despliegue automático. Staging en develop/main/tags; producción solo en main/tags y
+  # con aprobación manual si el entorno "production" tiene revisores requeridos.
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Despliegue en staging
+    needs: docker
+    if: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+    permissions:
+      contents: read
+      packages: read
+
+  deploy-production:
+    name: Despliegue en producción
+    needs: deploy-staging
+    if: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+    permissions:
+      contents: read
+      packages: read
+
+  # ---------------------------------------------------------------------------
+  # IE3 - Alertas: si una etapa de calidad/seguridad falla, se crea un issue y (opcional) se avisa por Slack.
+  # En los PR el bloqueo se ve como check fallido (ver docs/CONFIGURACION_GITHUB.md, protección de ramas).
+  # ---------------------------------------------------------------------------
+  alerta:
+    name: Alerta de pipeline bloqueado
+    needs: [test-java, test-python, security-scan, docker]
+    if: ${{ always() && github.event_name != 'pull_request' && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Crear issue de alerta
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat > cuerpo.md <<BODY
+          ## 🚨 El pipeline fue bloqueado
+
+          | Etapa | Resultado |
+          |---|---|
+          | Pruebas Java | ${{ needs.test-java.result }} |
+          | Pruebas Python | ${{ needs.test-python.result }} |
+          | Seguridad (Snyk) | ${{ needs.security-scan.result }} |
+          | Imágenes Docker | ${{ needs.docker.result }} |
+
+          - **Commit:** ${GITHUB_SHA}
+          - **Rama / tag:** ${GITHUB_REF_NAME}
+          - **Disparado por:** @${GITHUB_ACTOR}
+          - **Ejecución:** ${RUN_URL}
+
+          No se publicaron imágenes ni se desplegó nada. Revise el log de la etapa fallida, corrija y vuelva a ejecutar.
+          BODY
+          gh label create "pipeline-alert" --color B60205 --description "Alertas automáticas del pipeline CI/CD" --force
+          gh issue create --title "🚨 Pipeline bloqueado en ${GITHUB_REF_NAME} (${GITHUB_SHA::7})" --body-file cuerpo.md --label "pipeline-alert"
+
+      - name: Notificar en Slack (opcional)
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\"🚨 Pipeline bloqueado en ${GITHUB_REPOSITORY} (${GITHUB_REF_NAME}). Detalle: ${RUN_URL}\"}" \
+            "$SLACK_WEBHOOK_URL"

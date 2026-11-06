@@ -1,0 +1,41 @@
+# Configuración del microservicio de productos.
+# Los valores sensibles (credenciales de BD) llegan SIEMPRE por variables de entorno.
+server:
+  port: ${SERVER_PORT:8081}
+  shutdown: graceful
+
+spring:
+  application:
+    name: productos-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:update}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+
+# Datos de trazabilidad expuestos en /actuator/info (se inyectan al construir la imagen Docker)
+info:
+  app:
+    name: ${spring.application.name}
+    version: ${APP_VERSION:dev}
+    commit: ${GIT_COMMIT:unknown}
+    built-at: ${BUILD_TIME:unknown}
+    instance: ${HOSTNAME:local}

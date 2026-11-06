@@ -1,0 +1,131 @@
+name: Despliegue (reutilizable)
+
+# Workflow reutilizable: lo invoca ci-cd.yml una vez para "staging" y otra para "production".
+# Entorno cloud SIMULADO: el runner de GitHub actúa como servidor y Docker Compose como orquestador.
+# Descarga las imágenes publicadas en GHCR (identificadas por el SHA del commit), levanta el stack,
+# ejecuta pruebas de humo, deja evidencia (manifiesto) y limpia.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Entorno de destino (staging | production)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  deploy:
+    name: Desplegar en ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Con "environment" GitHub registra cada despliegue (historial en la pestaña Environments / Deployments)
+    # y aplica las reglas de protección configuradas (p. ej. aprobación manual en producción).
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Preparar la configuración del entorno
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY,,}"
+          DB_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::${DB_PASSWORD}"
+          {
+            cat "deploy/env/${ENVIRONMENT}.env"
+            echo ""
+            echo "IMAGE_PREFIX=${REGISTRY}/${REPO}"
+            echo "IMAGE_TAG=sha-${GITHUB_SHA::7}"
+            echo "GIT_COMMIT=${GITHUB_SHA}"
+            echo "APP_VERSION=${GITHUB_REF_NAME//\//-}"
+            echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "DB_PASSWORD=${DB_PASSWORD}"
+          } > .env
+          echo "Configuración del entorno ${ENVIRONMENT} (sin secretos):"
+          grep -v '^DB_PASSWORD=' .env
+
+      - name: Iniciar sesión en GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Descargar las imágenes publicadas por el pipeline
+        run: docker compose pull
+
+      - name: Desplegar con Docker Compose (espera a que todos los healthchecks estén en verde)
+        run: docker compose up -d --no-build --wait --wait-timeout 300
+
+      - name: Pruebas de humo
+        run: |
+          set -euo pipefail
+          set -a
+          . "deploy/env/${ENVIRONMENT}.env"
+          set +a
+          bash deploy/scripts/smoke-test.sh "http://localhost:${GATEWAY_PORT}" "${GITHUB_SHA}" "${PRODUCTOS_REPLICAS}"
+
+      - name: Registrar la evidencia del despliegue (trazabilidad)
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p evidencia
+          REPO="${GITHUB_REPOSITORY,,}"
+          TAG="sha-${GITHUB_SHA::7}"
+          digest() { docker image inspect --format '{{index .RepoDigests 0}}' "$1" 2>/dev/null || echo "no-disponible"; }
+          DIGEST_PRODUCTOS="$(digest "${REGISTRY}/${REPO}/productos:${TAG}")"
+          DIGEST_REPORTES="$(digest "${REGISTRY}/${REPO}/reportes:${TAG}")"
+          cat > "evidencia/manifiesto-${ENVIRONMENT}.json" <<JSON
+          {
+            "entorno": "${ENVIRONMENT}",
+            "commit": "${GITHUB_SHA}",
+            "ref": "${GITHUB_REF}",
+            "ejecucion": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "disparado_por": "${GITHUB_ACTOR}",
+            "fecha_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "imagenes": {
+              "productos": "${DIGEST_PRODUCTOS}",
+              "reportes": "${DIGEST_REPORTES}"
+            }
+          }
+          JSON
+          docker compose ps -a > "evidencia/contenedores-${ENVIRONMENT}.txt" 2>&1 || true
+          {
+            echo "### 🚀 Despliegue en ${ENVIRONMENT}"
+            echo ""
+            echo "| Dato | Valor |"
+            echo "|---|---|"
+            printf '| Commit | `%s` |\n' "${GITHUB_SHA}"
+            printf '| Imagen productos | `%s` |\n' "${DIGEST_PRODUCTOS}"
+            printf '| Imagen reportes | `%s` |\n' "${DIGEST_REPORTES}"
+            printf '| Ejecución | %s |\n' "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar la evidencia del despliegue
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: evidencia-despliegue-${{ inputs.environment }}
+          path: evidencia/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Diagnóstico si el despliegue falló
+        if: failure()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --no-color --tail 200 || true
+
+      - name: Limpiar el entorno simulado
+        if: always()
+        run: docker compose down --volumes --remove-orphans || true

@@ -1,0 +1,14 @@
+tests/
+reports/
+htmlcov/
+coverage.xml
+.coverage
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+.git/
+.gitignore
+*.md
+requirements-dev.txt
+pytest.ini

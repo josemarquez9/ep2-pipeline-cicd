@@ -1,0 +1,7 @@
+# Normaliza los finales de línea (evita que los scripts .sh fallen en Linux si se editan en Windows)
+* text=auto eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.png binary
+*.jpg binary

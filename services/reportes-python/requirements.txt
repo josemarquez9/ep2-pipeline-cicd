@@ -1,0 +1,5 @@
+# Dependencias de ejecución (versiones fijadas para builds reproducibles).
+# Dependabot propone las actualizaciones semanalmente (.github/dependabot.yml).
+Flask==3.1.3
+requests==2.33.1
+gunicorn==26.2.2
