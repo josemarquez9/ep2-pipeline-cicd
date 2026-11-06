@@ -33,7 +33,7 @@ jobs:
     env:
       ENVIRONMENT: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Preparar la configuración del entorno
         run: |
