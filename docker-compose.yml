@@ -79,7 +79,7 @@ services:
       resources:
         limits:
           cpus: "${PRODUCTOS_CPUS:-1.00}"
-          memory: ${PRODUCTOS_MEMORY:-512M}
+          memory: ${PRODUCTOS_MEMORY:-768M}
         reservations:
           memory: 256M
 

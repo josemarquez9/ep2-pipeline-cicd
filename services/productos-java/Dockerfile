@@ -35,7 +35,7 @@ ENV APP_VERSION=${APP_VERSION} \
     GIT_COMMIT=${GIT_COMMIT} \
     BUILD_TIME=${BUILD_TIME} \
     SERVER_PORT=8081 \
-    JAVA_OPTS="-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError"
+    JAVA_OPTS="-XX:MaxRAMPercentage=50.0 -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError"
 
 WORKDIR /app
 COPY --from=build --chown=app:app /workspace/target/productos-service.jar /app/app.jar

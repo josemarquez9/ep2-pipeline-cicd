@@ -49,7 +49,7 @@ flowchart TB
 |---|---|---|---|
 | Réplicas `productos` | 2 | 2 | 3 |
 | Réplicas `reportes` | 2 | 2 | 2 |
-| CPU / memoria por réplica de `productos` | 1.00 / 512 MB | 1.00 / 512 MB | 1.00 / 768 MB |
+| CPU / memoria por réplica de `productos` | 1.00 / 768 MB | 1.00 / 768 MB | 1.00 / 1024 MB |
 | CPU / memoria por réplica de `reportes` | 0.50 / 256 MB | 0.50 / 256 MB | 0.50 / 256 MB |
 
 ## API publicada por el gateway
