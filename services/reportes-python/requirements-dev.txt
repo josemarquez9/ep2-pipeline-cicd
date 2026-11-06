@@ -1,4 +1,4 @@
 # Dependencias para ejecutar las pruebas (no se instalan en la imagen Docker).
 -r requirements.txt
-pytest==9.0.3
+pytest==9.2.0
 pytest-cov==7.1.0
