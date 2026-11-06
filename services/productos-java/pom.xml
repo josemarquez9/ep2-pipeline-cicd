@@ -19,7 +19,7 @@
 
     <properties>
         <java.version>21</java.version>
-        <jacoco.version>0.8.15</jacoco.version>
+        <jacoco.version>0.8.16</jacoco.version>
         <!--
           Política de calidad: cobertura mínima de líneas (0.80 = 80 %).
           El pipeline puede sobrescribirla con -Djacoco.minimum.coverage=0.xx
