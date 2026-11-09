@@ -17,7 +17,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -B -ntp -q -DskipTests package
 
 # ---------- Etapa 2: ejecución ----------
-FROM eclipse-temurin:21-jre-alpine AS runtime
+FROM eclipse-temurin:25-jre-alpine AS runtime
 
 # Datos de trazabilidad: los inyecta el pipeline (ver .github/workflows/ci-cd.yml)
 ARG APP_VERSION=dev
