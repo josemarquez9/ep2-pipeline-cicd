@@ -5,7 +5,7 @@
 # =============================================================================
 
 # ---------- Etapa 1: dependencias ----------
-FROM python:3.12-slim AS builder
+FROM python:3.15-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
@@ -15,7 +15,7 @@ RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install -r requirements.txt
 
 # ---------- Etapa 2: ejecución ----------
-FROM python:3.12-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # Datos de trazabilidad: los inyecta el pipeline (ver .github/workflows/ci-cd.yml)
 ARG APP_VERSION=dev
